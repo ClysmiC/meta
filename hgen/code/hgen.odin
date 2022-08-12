@@ -64,7 +64,21 @@ sort_file_infos :: proc(file_infos: ^[]os.File_Info)
 {
     using sort;
     
-    // Sort alphabetically, but with .h files before .cpp files
+    sort(Interface{
+        collection = rawptr(file_infos),
+        len = proc(it: Interface) -> int
+        {
+            collection := (^[]os.File_Info)(it.collection);
+            return len(collection^);
+        },
+        less = compare_by_name_then_prefer_h_ext,
+        swap = proc(it: Interface, i, j: int)
+        {
+            collection := (^[]os.File_Info)(it.collection);
+            collection[i], collection[j] = collection[j], collection[i];
+        },
+    });
+
     sort(Interface{
         collection = rawptr(file_infos),
         len = proc(it: Interface) -> int
@@ -85,6 +99,12 @@ sort_file_infos :: proc(file_infos: ^[]os.File_Info)
     {
         collection := (^[]os.File_Info)(it.collection);
 
+        return collection[i].name < collection[j].name;
+
+        // TODO - figure out why this isn't working. I legitimately think Odin's sort function
+        //  is bugged, after like an hour of experimenting with this.
+/*
+
         i_dot0 := strings.last_index_byte(collection[i].name, '.');
         i_dot1 := strings.last_index_byte(collection[j].name, '.');
 
@@ -101,19 +121,11 @@ sort_file_infos :: proc(file_infos: ^[]os.File_Info)
         if i_dot1 != -1
         {
             ext1 = name1[i_dot1 + 1 : ];
-            name1 = name1[: i_dot1];
+            name1 = name1[ : i_dot1];
         }
 
-        if ext0 == "h" && ext1 != "h"
-        {
-            return true;
-        }
-        else if ext0 != "h" && ext1 == "h"
-        {
-            return false;
-        }
-
-        return name0 < name1;
+        return (name0 < name1); // || (name0 == name1 && ext0 == "h" && ext1 != "h");
+*/
     }
 }
 
@@ -127,6 +139,7 @@ verify_or_panic :: proc(fact: bool, message: string, pos: scan.Position)
         // TODO - Report the cpp source file that had the issue?
         // TODO - Leave the existing generated.h file untouched if we exit via panic?
         
+        line := pos.line;
         fmt.println("!!hgen exited with panic (", pos.line, "):", message);
         os.exit(1);
     }
@@ -554,7 +567,7 @@ main :: proc()
                         LTokens:
                         for
                         {
-                            consume_whitespace(&scanner);
+                            scan_past_comments(&scanner);
 
                             start := scan.position(&scanner);
                             
@@ -568,19 +581,6 @@ main :: proc()
                                     verify_or_panic(false, "Scan error", start);
                                 }
 
-                                case .Comment:
-                                {
-                                    // Ad-hoc special comments
-
-                                    if token.lexeme == "// !Breakpoint"
-                                    {
-                                        brk := true;
-                                        if brk
-                                        {
-                                        }
-                                    }
-                                }
-                                
                                 case .Namespace:
                                 {
                                     ident := next_token(&scanner);
@@ -872,64 +872,130 @@ parser_handle_function_keyword :: proc(using hgen: ^Hgen, prev_token: Token, sca
         builder := make_builder();
         defer destroy_builder(&builder);
         
-        l_paren := scan_past_token(&scanner, .L_Paren);
+        l_paren := scan_until_token(&scanner, .L_Paren);
         if l_paren != .L_Paren
         {
             assert(l_paren == .Eof);
             verify_or_panic(false, "Expected '(' at some point after 'internal' or 'inline'", scanner_start);
         }
 
-        write_string(&builder, scanner.src[scanner_start.offset : scan.position(&scanner).offset]);
+        thru_func_name := scanner.src[scanner_start.offset : scan.position(&scanner).offset];
+
+        next_token(&scanner);
+
+        write_string(&builder, thru_func_name);
+        write_string(&builder, "(");
 
         for
         {
+            scan_past_comments(&scanner);
             arg_start := scan.position(&scanner).offset;
 
             // Write arg to header
             
-            token_after_arg := scan_until_in_current_context(&scanner, []Token_Type{ .R_Paren, .Comma, .Equal });
-            if token_after_arg == .Equal
+            token_after_arg : Token;
+
+            arg_written := false;
+
+            for
             {
-                verify_or_panic(false, "Optional arguments not allowed in implementation. Use '!optional ='", scanner_start);
+                scan_until_in_current_context(&scanner, []Token_Type{ .R_Paren, .Comma, .Identifier });
+                token_after_arg = peek_token(&scanner);
+
+                if token_after_arg.type == .Identifier
+                {
+                    if token_after_arg.lexeme == "OPTIONAL0"
+                    {
+                        // write type
+                        consume_whitespace(&scanner);
+                        write_string(&builder, scanner.src[arg_start : scan.position(&scanner).offset]);
+
+                        next_token(&scanner);
+
+                        verify_or_panic(next_token(&scanner).type == .L_Paren, "Expected '(' after OPTIONAL0", scanner_start);
+
+                        name := next_token(&scanner);
+                        verify_or_panic(name.type == .Identifier, "Expected identifier after OPTIONAL0", scanner_start);
+
+                        // write name
+                        write_string(&builder, name.lexeme);
+
+                        verify_or_panic(next_token(&scanner).type == .R_Paren, "Expected ')' after identifier in OPTIONAL0", scanner_start);
+
+                        // write value
+                        write_string(&builder, "={}");
+
+                        token_after_arg = peek_token(&scanner);
+                        arg_written = true;
+                    }
+                    else if token_after_arg.lexeme == "OPTIONAL"
+                    {
+                        // write type
+                        consume_whitespace(&scanner);
+                        write_string(&builder, scanner.src[arg_start : scan.position(&scanner).offset]);
+
+                        next_token(&scanner);
+
+                        verify_or_panic(next_token(&scanner).type == .L_Paren, "Expected '('' after OPTIONAL0", scanner_start);
+
+                        name := next_token(&scanner);
+                        verify_or_panic(name.type == .Identifier, "Expected identifier after OPTIONAL0", scanner_start);
+
+                        // write name
+                        write_string(&builder, name.lexeme);
+
+                        verify_or_panic(next_token(&scanner).type == .Comma, "Expected ','' after identifier in OPTIONAL", scanner_start);
+
+                        consume_whitespace(&scanner);
+                        default_value_start := scan.position(&scanner).offset;
+
+                        // scan until macro close
+                        scan_until_in_current_context(&scanner, []Token_Type{ .R_Paren });
+                        verify_or_panic(peek_token(&scanner).type == .R_Paren, "Expected ')' to close OPTIONAL", scanner_start);
+
+                        // write value
+                        write_string(&builder, "=");
+                        write_string(&builder, scanner.src[default_value_start : scan.position(&scanner).offset]);
+                        arg_written = true;
+
+                        // consume macro close
+                        next_token(&scanner);
+
+                        scan_until_in_current_context(&scanner, []Token_Type{ .R_Paren, .Comma });
+                        token_after_arg = peek_token(&scanner);
+                    }
+                    else
+                    {
+                        // Identifier likely part of type. Keep going.
+                        next_token(&scanner);
+                        continue;
+                    }
+                }
+
+                break;
             }
 
-            write_string(&builder, scanner.src[arg_start : scan.position(&scanner).offset]);
+            verify_or_panic(token_after_arg.type != .Eof, "Unexpected end of file while parsing argument", scanner_start);
+
+            if !arg_written
+            {
+                write_string(&builder, scanner.src[arg_start : scan.position(&scanner).offset]);
+                arg_written = true;
+            }
 
             // Advance past token after arg
             
             next_token(&scanner);
 
-            // Look for comments / !optional
-            
-            peeked := peek_token(&scanner);
-            if peeked.type == .Comment
+            if token_after_arg.type == .Comma
             {
-                next_token(&scanner);
-                
-                command_prefix :: "// !optional =";
-                if strings.has_prefix(peeked.lexeme, command_prefix)
-                {
-                    optional_string := peeked.lexeme[len(command_prefix) : ];
-
-                    write_string(&builder, "=");
-                    write_string(&builder, optional_string);
-                }
-            }
-            
-            if token_after_arg == .Eof
-            {
-                verify_or_panic(false, "Expected ',' or balanced ')' after arg", scanner_start);
-            }
-            
-            if token_after_arg == .R_Paren
-            {
-                write_string(&builder, ")");
-                break;
+                write_string(&builder, ", ");
             }
             else
             {
-                assert(token_after_arg == .Comma);
-                write_string(&builder, ",");
+                assert(token_after_arg.type == .R_Paren);
+                write_string(&builder, ")");
+                break;  // Done writing function
             }
         }
 

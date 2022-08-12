@@ -159,6 +159,27 @@ scan_until :: proc{ scan_until_token, scan_until_token_set };
 scan_past_in_current_context :: proc{ scan_past_token_in_current_context, scan_past_token_set_in_current_context };
 scan_until_in_current_context :: proc{ scan_until_token_in_current_context, scan_until_token_set_in_current_context };
 
+scan_past_comments :: proc(scanner: ^scan.Scanner, consume_trailing_whitespace := true)
+{
+    for
+    {
+        token := peek_token(scanner);
+        if token.type == .Comment
+        {
+            next_token(scanner);
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    if consume_trailing_whitespace
+    {
+        consume_whitespace(scanner);
+    }
+}
+
 next_token :: proc(scanner: ^scan.Scanner) -> Token
 {
     using scan;
@@ -336,7 +357,7 @@ next_token :: proc(scanner: ^scan.Scanner) -> Token
                     result_type = .Equal;
                 }
 
-                return Token{ .Operator, scanner.src[start : position(scanner).offset] };
+                return Token{ result_type, scanner.src[start : position(scanner).offset] };
             }
 
             case '<', '>':
