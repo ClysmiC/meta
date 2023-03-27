@@ -40,7 +40,7 @@ Token_Type :: enum
 
     // Pseudo-reserved words
     // (Not actually keywords, but I use them as if they are)
-    Internal,
+    Function,
     /* ImportNamespace, */
     /* ImportNamespaceAs, */
 
@@ -247,7 +247,7 @@ next_token :: proc(scanner: ^scan.Scanner) -> Token
                     case "class":             result.type = .Class;
                     case "struct":            result.type = .Struct;
                     case "union":             result.type = .Union;
-                    case "internal":          result.type = .Internal;
+                    case "function":          result.type = .Function;
                     /* case "ImportNamespace":   result.type = .ImportNamespace; */
                     /* case "ImportNamespaceAs": result.type = .ImportNamespaceAs; */
                     case "template":          result.type = .Template;
