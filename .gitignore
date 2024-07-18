@@ -1,2 +1,5 @@
 metadesk/
 bin/
+
+# Add binary to github to make my life easier
+!hgen/bin/hgen.exe
